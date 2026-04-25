@@ -248,3 +248,14 @@ def test_timeline_truncates_to_last_n() -> None:
     for _ in range(60):
         rules.apply(ManualAdjustment(op="adjust", player="p1", delta=1))
     assert len(rules.state.timeline) <= 40
+
+
+def test_start_match_sets_match_started_flag() -> None:
+    from sinuca_counter.rules.events import ManualAdjustment
+
+    rules = BrazilianRules(p1_name="L", p2_name="R")
+    assert rules.state.match_started is False
+    state = rules.apply(ManualAdjustment(op="start_match"))
+    assert state.match_started is True
+    state = rules.apply(ManualAdjustment(op="stop_match"))
+    assert state.match_started is False

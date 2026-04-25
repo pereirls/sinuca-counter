@@ -43,6 +43,7 @@ def _run_sequence(
         settle_frames=settle_frames,
         min_shot_frames=min_shot_frames,
         max_pocketed_per_shot=max_pocketed_per_shot,
+        armed=True,
     )
     events: list[VisionEvent] = []
     t = 0
@@ -152,4 +153,75 @@ def test_motion_spike_below_min_shot_frames_is_ignored() -> None:
 
     events, det = _run_sequence(frames, min_shot_frames=4)
     assert events == []
+    assert det.state_name == "IDLE"
+
+
+def test_disarmed_detector_emits_nothing_even_with_pocket() -> None:
+    tracker = BallTracker(max_match_distance=30.0, occlusion_tolerance_frames=30)
+    det = ShotPhaseDetector(
+        tracker,
+        speed_threshold=0.5,
+        settle_frames=3,
+        min_shot_frames=1,
+        armed=False,  # disarmed by default
+    )
+    events: list[VisionEvent] = []
+    t = 0
+    still = [(10, 10), (50, 50)]
+    frames: list[list[tuple[int, int]]] = [still] * 3
+    for offset in range(1, 5):
+        frames.append([(10, 10), (50 + offset * 8, 50)])
+    frames.extend([[(10, 10)]] * 8)
+    for positions in frames:
+        tracker.update(_balls_at(positions), t_ms=t, classify=_classify_fixed)
+        events.extend(det.evaluate(t_ms=t))
+        t += 33
+    assert events == []
+    assert det.armed is False
+
+
+def test_arm_takes_a_fresh_baseline_and_starts_emitting() -> None:
+    tracker = BallTracker(max_match_distance=30.0, occlusion_tolerance_frames=30)
+    det = ShotPhaseDetector(
+        tracker,
+        speed_threshold=0.5,
+        settle_frames=3,
+        min_shot_frames=1,
+        armed=False,
+    )
+    # Warm-up phase: balls bouncing around while disarmed.
+    t = 0
+    for _ in range(5):
+        tracker.update(
+            _balls_at([(10, 10), (50, 50)]),
+            t_ms=t,
+            classify=_classify_fixed,
+        )
+        det.evaluate(t_ms=t)
+        t += 33
+
+    # Operator clicks "Iniciar partida".
+    det.arm(t_ms=t)
+    assert det.armed is True
+
+    # Now drive a real shot and pocket one ball.
+    events: list[VisionEvent] = []
+    frames: list[list[tuple[int, int]]] = [[(10, 10), (50, 50)]] * 3
+    for offset in range(1, 5):
+        frames.append([(10, 10), (50 + offset * 8, 50)])
+    frames.extend([[(10, 10)]] * 8)
+    for positions in frames:
+        tracker.update(_balls_at(positions), t_ms=t, classify=_classify_fixed)
+        events.extend(det.evaluate(t_ms=t))
+        t += 33
+
+    pockets = [e for e in events if isinstance(e, BallPocketed)]
+    assert len(pockets) == 1
+
+
+def test_disarm_clears_state() -> None:
+    tracker = BallTracker(max_match_distance=30.0, occlusion_tolerance_frames=30)
+    det = ShotPhaseDetector(tracker, armed=True)
+    det.disarm()
+    assert det.armed is False
     assert det.state_name == "IDLE"

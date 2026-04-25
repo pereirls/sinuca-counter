@@ -153,3 +153,11 @@ def test_mjpeg_generator_uses_placeholder_when_no_frame_published() -> None:
     chunks = list(mjpeg_generator(broker, max_chunks=1, wait_timeout=0.01))
     assert len(chunks) == 1
     assert b"Content-Type: image/jpeg" in chunks[0]
+
+
+def test_start_match_and_stop_match_endpoints() -> None:
+    client, _, _ = _make_client()
+    state = client.post("/control/start_match").json()
+    assert state["match_started"] is True
+    state = client.post("/control/stop_match").json()
+    assert state["match_started"] is False

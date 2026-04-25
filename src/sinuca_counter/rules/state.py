@@ -65,6 +65,10 @@ class ScoreState:
     # finishing phase). Empty string means the current rule set does not
     # expose a target.
     target_ball: str = ""
+    # True once the operator has pressed "Iniciar partida" — automatic shot
+    # detection emits events only while this is True. Defaults to False so
+    # players can warm up on camera without polluting the score.
+    match_started: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -79,6 +83,7 @@ class ScoreState:
             "detection_status": self.detection_status,
             "rules_name": self.rules_name,
             "target_ball": self.target_ball,
+            "match_started": self.match_started,
             "timeline": [entry.to_dict() for entry in self.timeline],
         }
 

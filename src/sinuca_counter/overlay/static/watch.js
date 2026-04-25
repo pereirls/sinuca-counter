@@ -24,7 +24,17 @@
     status: document.querySelector("#status"),
     target: document.querySelector("#target"),
     video: document.querySelector("#video"),
+    startBtn: document.getElementById("start-match-btn"),
+    stopBtn: document.getElementById("stop-match-btn"),
   };
+
+  async function post(path) {
+    try {
+      await fetch(path, { method: "POST" });
+    } catch (err) {
+      console.warn(path, "failed", err);
+    }
+  }
 
   function renderTarget(state) {
     if (!state.target_ball) {
@@ -45,10 +55,16 @@
     els.p1.classList.toggle("active", state.current_player === "p1");
     els.p2.classList.toggle("active", state.current_player === "p2");
     renderTarget(state);
+    const started = Boolean(state.match_started);
+    if (els.startBtn) els.startBtn.disabled = started;
+    if (els.stopBtn) els.stopBtn.disabled = !started;
     let status = "";
     let level = "ok";
     if (state.paused) {
       status = "pausado";
+      level = "warn";
+    } else if (!started) {
+      status = "aquecendo — clique em Iniciar partida para começar a contar";
       level = "warn";
     } else if (state.detection_status && state.detection_status !== "ok") {
       status = state.detection_status;
@@ -56,6 +72,13 @@
     }
     els.status.textContent = status;
     els.status.className = "status" + (level !== "ok" ? " " + level : "");
+  }
+
+  if (els.startBtn) {
+    els.startBtn.addEventListener("click", () => post("/control/start_match"));
+  }
+  if (els.stopBtn) {
+    els.stopBtn.addEventListener("click", () => post("/control/stop_match"));
   }
 
   function connect() {
