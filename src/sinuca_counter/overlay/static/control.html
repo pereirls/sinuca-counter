@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+  <head>
+    <meta charset="utf-8" />
+    <title>Sinuca Counter — Painel de controle</title>
+    <link rel="stylesheet" href="/static/control.css" />
+  </head>
+  <body>
+    <header>
+      <h1>Painel de controle</h1>
+      <span class="rules" id="rules"></span>
+    </header>
+
+    <main class="grid">
+      <section class="player-card" id="card-p1">
+        <h2><span class="turn-dot"></span><span class="name">P1</span></h2>
+        <div class="score" id="score-p1">0</div>
+        <div class="row">
+          <button data-player="p1" data-delta="-1">−1</button>
+          <button data-player="p1" data-delta="+1">+1</button>
+          <input type="number" id="set-p1" min="0" />
+        </div>
+      </section>
+
+      <section class="player-card" id="card-p2">
+        <h2><span class="turn-dot"></span><span class="name">P2</span></h2>
+        <div class="score" id="score-p2">0</div>
+        <div class="row">
+          <button data-player="p2" data-delta="-1">−1</button>
+          <button data-player="p2" data-delta="+1">+1</button>
+          <input type="number" id="set-p2" min="0" />
+        </div>
+      </section>
+
+      <section class="actions">
+        <button id="set-score-btn" class="primary">Aplicar placar</button>
+        <button id="swap-turn-btn">Trocar vez</button>
+        <button id="undo-btn">Desfazer</button>
+        <button id="pause-btn">Pausar</button>
+        <button id="resume-btn">Retomar</button>
+        <button id="reset-btn" class="danger">Resetar partida</button>
+      </section>
+
+      <section class="rename">
+        <h3>Jogadores</h3>
+        <label>P1 <input id="rename-p1" /></label>
+        <label>P2 <input id="rename-p2" /></label>
+        <button id="rename-btn">Salvar nomes</button>
+      </section>
+
+      <section class="correct">
+        <h3>Corrigir última cor</h3>
+        <select id="correct-color">
+          <option value="amarela">Amarela (1)</option>
+          <option value="vermelha">Vermelha (2)</option>
+          <option value="verde">Verde (3)</option>
+          <option value="marrom">Marrom (4)</option>
+          <option value="azul">Azul (5)</option>
+          <option value="rosa">Rosa (6)</option>
+          <option value="preta_bola_7">Preta — bolão (7)</option>
+        </select>
+        <button id="correct-btn">Aplicar correção</button>
+      </section>
+
+      <section class="timeline">
+        <h3>Timeline</h3>
+        <ol id="timeline"></ol>
+      </section>
+    </main>
+
+    <script src="/static/control.js"></script>
+  </body>
+</html>
