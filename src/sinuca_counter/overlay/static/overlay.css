@@ -1,0 +1,91 @@
+/* Theme switch via query param (?theme=transparent|window) is applied in JS. */
+
+:root {
+  --fg: #fff;
+  --accent: #ffb547;
+  --bg-window: rgba(15, 15, 20, 0.92);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  background: transparent;
+}
+
+body[data-theme="window"] {
+  background: var(--bg-window);
+}
+
+.overlay {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  padding: 16px 24px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+}
+
+body[data-theme="window"] .overlay {
+  border-radius: 12px;
+  border: 2px solid rgba(255, 181, 71, 0.4);
+  width: 100vw;
+  height: 100vh;
+}
+
+.player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 140px;
+}
+
+.player .name {
+  font-size: 1.4rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.player .score {
+  font-size: 4.5rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.player.active .name { color: var(--accent); }
+.player.active .score { color: var(--accent); }
+
+.player .turn-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: transparent;
+  margin-bottom: 6px;
+  transition: background 0.2s;
+}
+
+.player.active .turn-dot {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+.separator {
+  font-size: 3rem;
+  font-weight: 300;
+  opacity: 0.5;
+}
+
+.status {
+  position: fixed;
+  bottom: 8px;
+  right: 12px;
+  font-size: 0.8rem;
+  opacity: 0.7;
+}
+
+.status.warn { color: var(--accent); }
+.status.error { color: #ff6b6b; }

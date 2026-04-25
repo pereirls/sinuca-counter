@@ -1,0 +1,143 @@
+:root {
+  --fg: #ececec;
+  --bg: #15161d;
+  --panel: #1f2130;
+  --accent: #ffb547;
+  --danger: #ff6b6b;
+  --primary: #4f9cff;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: "Segoe UI", system-ui, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  padding: 16px 24px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+header h1 {
+  margin: 0;
+  font-size: 1.2rem;
+}
+
+.rules {
+  font-size: 0.9rem;
+  opacity: 0.6;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 16px;
+  padding: 16px 24px;
+}
+
+.player-card {
+  background: var(--panel);
+  padding: 16px;
+  border-radius: 12px;
+}
+
+.player-card h2 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px 0;
+}
+
+.turn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: transparent;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+}
+
+.player-card.active .turn-dot {
+  background: var(--accent);
+  border-color: var(--accent);
+}
+
+.score {
+  font-size: 2.6rem;
+  font-weight: 700;
+  margin-bottom: 8px;
+}
+
+.row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+button {
+  background: #2a2c3a;
+  color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 8px 14px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.95rem;
+}
+
+button:hover { background: #383b4d; }
+button.primary { background: var(--primary); border-color: transparent; }
+button.danger { background: var(--danger); border-color: transparent; }
+
+input, select {
+  background: #11121a;
+  color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 7px 10px;
+  border-radius: 6px;
+  font-size: 0.95rem;
+  min-width: 80px;
+}
+
+.actions, .rename, .correct, .timeline {
+  background: var(--panel);
+  padding: 16px;
+  border-radius: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.actions {
+  flex-direction: row;
+  flex-wrap: wrap;
+}
+
+.rename label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.timeline {
+  grid-column: 1 / -1;
+  max-height: 240px;
+  overflow-y: auto;
+}
+
+.timeline ol {
+  margin: 0;
+  padding-left: 20px;
+  font-size: 0.9rem;
+}
+
+.timeline li { padding: 2px 0; }
+
+@media (max-width: 720px) {
+  .grid { grid-template-columns: 1fr; }
+}
