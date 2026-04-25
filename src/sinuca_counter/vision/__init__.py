@@ -1,11 +1,15 @@
 """Computer vision pipeline.
 
-Phase 1a ships a classical OpenCV detector. Phase 1b will swap the
-:class:`BallDetector` implementation for a YOLO-based one without changing any
-other module.
+Default detector in this release is YOLO via Ultralytics (``YoloBallDetector``,
+requires ``uv sync --extra yolo``); the classical OpenCV detector
+(``HsvBallDetector``) remains available for environments without GPU/torch.
+
+Detection runs on the native frame — there is no manual table calibration
+("4 corner clicks"). Score events are inferred by diffing per-colour ball
+counts between the pre-shot and post-shot stable snapshots
+(:class:`ShotPhaseDetector`).
 """
 
-from .calibrator import CalibrationData, TableCalibrator
 from .classifier import ColorClassifier
 from .detector import (
     BallDetector,
@@ -16,14 +20,12 @@ from .detector import (
 from .events import CalibrationLost, FrameProcessed, VisionEvent
 from .palette import PaletteCalibrator
 from .pipeline import VisionPipeline
-from .pocket import PocketEventDetector
+from .shot_phase import ShotPhaseDetector
 from .tracker import BallTracker, TrackedBall
-from .turn import TurnEndDetector
 
 __all__ = [
     "BallDetector",
     "BallTracker",
-    "CalibrationData",
     "CalibrationLost",
     "ColorClassifier",
     "DetectedBall",
@@ -31,10 +33,8 @@ __all__ = [
     "HsvBallDetector",
     "OpenCVBallDetector",
     "PaletteCalibrator",
-    "PocketEventDetector",
-    "TableCalibrator",
+    "ShotPhaseDetector",
     "TrackedBall",
-    "TurnEndDetector",
     "VisionEvent",
     "VisionPipeline",
 ]

@@ -1,9 +1,13 @@
 """Command-line entrypoint.
 
-Wires :class:`FileVideoSource` → :class:`VisionPipeline` → :class:`BrazilianRules`
-→ :class:`OverlayServer` and runs them all together. The vision loop runs in a
-background thread so the FastAPI server can serve HTTP/WebSocket on the main
-asyncio loop.
+Wires :class:`FileVideoSource` → :class:`VisionPipeline` → rules engine →
+:class:`OverlayServer` and runs them all together. The vision loop runs in
+a background thread so the FastAPI server can serve HTTP/WebSocket on the
+main asyncio loop.
+
+Default detector is YOLO (Ultralytics) — install with ``uv sync --extra yolo``.
+If the extra is not installed, the CLI transparently falls back to the
+classical HSV/HoughCircles detector.
 """
 
 from __future__ import annotations
@@ -18,39 +22,35 @@ import threading
 from collections.abc import Iterable
 from pathlib import Path
 
+import cv2
 import uvicorn
 
+from .overlay.frame_broker import FrameBroker
 from .overlay.server import create_app
 from .overlay.state_bus import StateBus
 from .rules.base import RuleSet
 from .rules.brazilian import BrazilianRules
 from .rules.events import GameEvent
+from .rules.snooker import SnookerRules
 from .rules.state import ScoreState
 from .video.file import FileVideoSource
-from .vision.calibrator import CalibrationData, TableCalibrator
 from .vision.classifier import ColorClassifier
-from .vision.detector import HsvBallDetector
+from .vision.detector import BallDetector, HsvBallDetector
 from .vision.events import (
     BallPocketed,
-    CalibrationLost,
     FrameProcessed,
     TurnEnded,
     VisionEvent,
 )
 from .vision.palette import PaletteCalibrator
 from .vision.pipeline import VisionPipeline
-from .vision.pocket import PocketEventDetector
+from .vision.shot_phase import ShotPhaseDetector
 from .vision.tracker import BallTracker
-from .vision.turn import TurnEndDetector
 
 log = logging.getLogger(__name__)
 
 
 # --- helpers ----------------------------------------------------------------
-
-
-def _calibration_path(video_path: Path) -> Path:
-    return video_path.with_suffix(video_path.suffix + ".calib.json")
 
 
 def _palette_path(video_path: Path) -> Path:
@@ -59,23 +59,6 @@ def _palette_path(video_path: Path) -> Path:
 
 def _replay_path(video_path: Path) -> Path:
     return video_path.with_suffix(video_path.suffix + ".replay.jsonl")
-
-
-def _load_or_calibrate(
-    video_path: Path,
-    *,
-    sample_frame=None,
-    interactive: bool = True,
-) -> TableCalibrator:
-    path = _calibration_path(video_path)
-    if path.exists():
-        log.info("loading calibration from %s", path)
-        return TableCalibrator.load(path)
-    if not interactive or sample_frame is None:
-        raise FileNotFoundError(f"calibration {path!s} missing; rerun without --no-interactive")
-    calibrator = TableCalibrator.from_clicks(sample_frame)  # pragma: no cover
-    calibrator.save(path)
-    return calibrator
 
 
 def _load_palette(video_path: Path) -> PaletteCalibrator:
@@ -100,6 +83,30 @@ def _find_free_port(host: str, start: int) -> int:
     raise RuntimeError(f"no free port found starting at {start}")
 
 
+def _build_detector(kind: str, weights: str) -> BallDetector:
+    kind = kind.lower()
+    if kind == "hsv":
+        log.info("using classical HSV/HoughCircles detector")
+        return HsvBallDetector()
+    if kind == "yolo":
+        try:
+            from .vision.yolo_detector import YoloBallDetector
+        except ImportError as exc:  # pragma: no cover - depends on extras
+            raise ImportError(
+                "Detector 'yolo' requires the [yolo] extra. "
+                "Install with `uv sync --extra yolo` or pass `--detector hsv`."
+            ) from exc
+        try:
+            return YoloBallDetector(weights=weights)
+        except ImportError as exc:
+            log.warning(
+                "YOLO unavailable (%s) — falling back to classical HSV detector.",
+                exc,
+            )
+            return HsvBallDetector()
+    raise ValueError(f"unknown detector kind: {kind!r}")
+
+
 # --- runner -----------------------------------------------------------------
 
 
@@ -111,7 +118,12 @@ def _serialize_event(event: GameEvent | VisionEvent) -> str:
 
 
 class VisionWorker:
-    """Pumps frames through the pipeline and pushes events into the rules engine."""
+    """Pumps frames through the pipeline and pushes events into the rules engine.
+
+    Also encodes every Nth frame as JPEG into the :class:`FrameBroker` so the
+    ``/stream.mjpg`` endpoint can serve the processed footage back to the
+    browser in sync with the score overlay.
+    """
 
     def __init__(
         self,
@@ -120,6 +132,10 @@ class VisionWorker:
         rules: RuleSet,
         bus: StateBus,
         loop: asyncio.AbstractEventLoop,
+        frame_broker: FrameBroker,
+        *,
+        stream_every_n_frames: int = 1,
+        jpeg_quality: int = 75,
         replay_log: Path | None = None,
     ) -> None:
         self._source = source
@@ -128,6 +144,9 @@ class VisionWorker:
         self._bus = bus
         self._loop = loop
         self._replay_log = replay_log
+        self._frame_broker = frame_broker
+        self._stream_every_n_frames = max(1, stream_every_n_frames)
+        self._jpeg_quality = jpeg_quality
         self._stop = threading.Event()
 
     def stop(self) -> None:
@@ -135,11 +154,23 @@ class VisionWorker:
 
     def run(self) -> None:
         with self._open_replay_log() as log_handle:
-            for frame, t_ms in self._source.frames():
+            for frame_idx, (frame, t_ms) in enumerate(self._source.frames()):
                 if self._stop.is_set():
                     return
                 events = self._pipeline.process(frame, t_ms)
                 self._dispatch(events, log_handle)
+                if frame_idx % self._stream_every_n_frames == 0:
+                    self._publish_frame(frame)
+
+    def _publish_frame(self, frame) -> None:  # type: ignore[no-untyped-def]
+        ok, encoded = cv2.imencode(
+            ".jpg",
+            frame,
+            [int(cv2.IMWRITE_JPEG_QUALITY), self._jpeg_quality],
+        )
+        if not ok:
+            return
+        self._frame_broker.publish(encoded.tobytes())
 
     @contextlib.contextmanager
     def _open_replay_log(self):
@@ -163,11 +194,6 @@ class VisionWorker:
             if isinstance(event, BallPocketed | TurnEnded):
                 state = self._rules.apply(event)
                 asyncio.run_coroutine_threadsafe(self._bus.publish(state), self._loop)
-            elif isinstance(event, CalibrationLost):
-                state = self._rules.state.with_changes(
-                    detection_status=f"calibration lost: {event.reason}"
-                )
-                asyncio.run_coroutine_threadsafe(self._bus.publish(state), self._loop)
 
 
 def _apply_event_factory(rules: RuleSet, replay_log: Path | None):
@@ -185,12 +211,18 @@ def _apply_event_factory(rules: RuleSet, replay_log: Path | None):
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="sinuca-counter")
-    parser.add_argument("--video", required=True, help="path to .mp4 file")
+    parser.add_argument(
+        "--video",
+        help="path to .mp4 file (required unless --no-vision is used)",
+    )
     parser.add_argument(
         "--rules",
-        choices=["brasileira"],
+        choices=["brasileira", "snooker-6", "snooker-15"],
         default="brasileira",
-        help="modality (only 'brasileira' on MVP)",
+        help=(
+            "modality: 'brasileira' (sinuca brasileira), 'snooker-6' "
+            "(European 6-red snooker) or 'snooker-15' (English 15-red snooker)"
+        ),
     )
     parser.add_argument("--p1", default="P1", help="player 1 name")
     parser.add_argument("--p2", default="P2", help="player 2 name")
@@ -203,15 +235,21 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--bolao-penalty",
         action="store_true",
-        help="apply premature-bolão penalty (loses rack)",
+        help="[brasileira] apply premature-bolão penalty (loses rack)",
+    )
+    parser.add_argument(
+        "--detector",
+        choices=["yolo", "hsv"],
+        default="yolo",
+        help="detector backend: 'yolo' (default, needs [yolo] extra) or 'hsv' (classical)",
+    )
+    parser.add_argument(
+        "--yolo-weights",
+        default="yolov8n.pt",
+        help="YOLO weights (path or Ultralytics name). Ignored when --detector=hsv.",
     )
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8088)
-    parser.add_argument(
-        "--no-interactive",
-        action="store_true",
-        help="fail if calibration is missing instead of asking for clicks",
-    )
     parser.add_argument(
         "--no-vision",
         action="store_true",
@@ -221,6 +259,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-replay-log",
         action="store_true",
         help="skip writing the .replay.jsonl event log",
+    )
+    parser.add_argument(
+        "--stream-every-n-frames",
+        type=int,
+        default=2,
+        help="publish every Nth processed frame to /stream.mjpg (default: 2)",
     )
     parser.add_argument("--log-level", default="INFO")
     return parser
@@ -234,6 +278,22 @@ def _build_rules(args: argparse.Namespace) -> RuleSet:
             starting_player=args.saque,
             bolao_premature_penalty=args.bolao_penalty,
         )
+    if args.rules == "snooker-6":
+        return SnookerRules(
+            reds=6,
+            rules_name="snooker-6",
+            p1_name=args.p1,
+            p2_name=args.p2,
+            starting_player=args.saque,
+        )
+    if args.rules == "snooker-15":
+        return SnookerRules(
+            reds=15,
+            rules_name="snooker-15",
+            p1_name=args.p1,
+            p2_name=args.p2,
+            starting_player=args.saque,
+        )
     raise ValueError(f"unsupported rules: {args.rules}")
 
 
@@ -244,13 +304,20 @@ def main(argv: list[str] | None = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
 
-    video_path = Path(args.video).resolve()
+    if not args.no_vision and not args.video:
+        raise SystemExit("--video is required unless --no-vision is set")
+
     rules = _build_rules(args)
     bus = StateBus(initial=rules.state)
-    replay_log = None if args.no_replay_log else _replay_path(video_path)
+    frame_broker = FrameBroker()
+
+    video_path: Path | None = Path(args.video).resolve() if args.video else None
+    replay_log: Path | None = None
+    if video_path is not None and not args.no_replay_log:
+        replay_log = _replay_path(video_path)
     apply_event = _apply_event_factory(rules, replay_log)
 
-    app = create_app(bus, apply_event)
+    app = create_app(bus, apply_event, frame_broker=frame_broker)
 
     port = _find_free_port(args.host, args.port)
     config = uvicorn.Config(app, host=args.host, port=port, log_level="warning")
@@ -261,49 +328,44 @@ def main(argv: list[str] | None = None) -> int:
         worker_thread: threading.Thread | None = None
         worker: VisionWorker | None = None
 
-        if not args.no_vision:
+        if not args.no_vision and video_path is not None:
             source = FileVideoSource(video_path)
-            sample_frame = None
-            try:
-                sample_frame, _ = next(iter(source.frames()))
-            except StopIteration:
-                source.close()
-                raise RuntimeError("video has no frames") from None
-            calibrator = _load_or_calibrate(
-                video_path,
-                sample_frame=sample_frame,
-                interactive=not args.no_interactive,
-            )
             palette = _load_palette(video_path)
             classifier = ColorClassifier(palette)
-            detector = HsvBallDetector()
-            tracker = BallTracker()
-            pocket_detector = PocketEventDetector(calibrator.calibration, tracker)
-            turn_detector = TurnEndDetector(tracker)
+            detector = _build_detector(args.detector, args.yolo_weights)
+            # Larger occlusion tolerance now that the shot-phase detector is
+            # responsible for deciding what "pocketed" means — we want tracks
+            # to survive through the worst part of the shot.
+            tracker = BallTracker(
+                max_match_distance=45.0,
+                occlusion_tolerance_frames=90,
+            )
+            shot_phase = ShotPhaseDetector(tracker)
             pipeline = VisionPipeline(
-                calibrator=calibrator,
                 detector=detector,
                 classifier=classifier,
                 tracker=tracker,
-                pocket_detector=pocket_detector,
-                turn_detector=turn_detector,
+                shot_phase_detector=shot_phase,
             )
-            # Re-open the video so frame iteration starts at frame 0.
-            source.close()
-            source = FileVideoSource(video_path)
             worker = VisionWorker(
                 source=source,
                 pipeline=pipeline,
                 rules=rules,
                 bus=bus,
                 loop=asyncio.get_running_loop(),
+                frame_broker=frame_broker,
+                stream_every_n_frames=max(1, args.stream_every_n_frames),
                 replay_log=replay_log,
             )
             worker_thread = threading.Thread(target=worker.run, name="vision", daemon=True)
             worker_thread.start()
 
         log.info(
-            "overlay http://%s:%d  control http://%s:%d/control", args.host, port, args.host, port
+            "watch http://%s:%d/watch  control http://%s:%d/control",
+            args.host,
+            port,
+            args.host,
+            port,
         )
         try:
             await server_task
@@ -320,9 +382,7 @@ def main(argv: list[str] | None = None) -> int:
     return 0
 
 
-# Provide CalibrationData re-export for users wanting to build calibrations
-# programmatically without going through the interactive UI.
-__all__ = ["CalibrationData", "build_parser", "main"]
+__all__ = ["VisionWorker", "build_parser", "main"]
 
 
 if __name__ == "__main__":  # pragma: no cover

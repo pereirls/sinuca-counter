@@ -6,6 +6,7 @@ import json
 
 from fastapi.testclient import TestClient
 
+from sinuca_counter.overlay.frame_broker import FrameBroker
 from sinuca_counter.overlay.server import create_app
 from sinuca_counter.overlay.state_bus import StateBus
 from sinuca_counter.rules.brazilian import BrazilianRules
@@ -116,3 +117,39 @@ def test_control_html_returned() -> None:
     response = client.get("/control")
     assert response.status_code == 200
     assert b"Painel de controle" in response.content
+
+
+def test_watch_html_returned() -> None:
+    client, _, _ = _make_client()
+    response = client.get("/watch")
+    assert response.status_code == 200
+    assert b"stream.mjpg" in response.content
+
+
+def test_mjpeg_route_is_registered() -> None:
+    client, _, _ = _make_client()
+    routes = {getattr(r, "path", None) for r in client.app.router.routes}
+    assert "/stream.mjpg" in routes
+
+
+def test_mjpeg_generator_emits_boundary_and_jpeg_bytes() -> None:
+    from sinuca_counter.overlay.server import MJPEG_BOUNDARY, mjpeg_generator
+
+    broker = FrameBroker()
+    broker.publish(b"\xff\xd8\xff\xd9HELLO")
+    chunks = list(mjpeg_generator(broker, max_chunks=1, wait_timeout=0.01))
+    assert len(chunks) == 1
+    chunk = chunks[0]
+    assert f"--{MJPEG_BOUNDARY}".encode() in chunk
+    assert b"Content-Type: image/jpeg" in chunk
+    assert b"HELLO" in chunk
+    assert chunk.endswith(b"\r\n")
+
+
+def test_mjpeg_generator_uses_placeholder_when_no_frame_published() -> None:
+    from sinuca_counter.overlay.server import mjpeg_generator
+
+    broker = FrameBroker()  # no publish()
+    chunks = list(mjpeg_generator(broker, max_chunks=1, wait_timeout=0.01))
+    assert len(chunks) == 1
+    assert b"Content-Type: image/jpeg" in chunks[0]

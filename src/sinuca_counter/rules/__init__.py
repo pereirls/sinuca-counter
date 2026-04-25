@@ -18,6 +18,7 @@ from .events import (
     Undo,
     VisionEvent,
 )
+from .snooker import SnookerRules
 from .state import BallColor, ScoreState
 
 __all__ = [
@@ -28,6 +29,7 @@ __all__ = [
     "ManualAdjustment",
     "RuleSet",
     "ScoreState",
+    "SnookerRules",
     "TurnEnded",
     "Undo",
     "VisionEvent",

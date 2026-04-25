@@ -13,16 +13,52 @@ from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from sinuca_counter.rules.events import GameEvent, ManualAdjustment, Undo
 from sinuca_counter.rules.state import BallColor, ScoreState
 
+from .frame_broker import FrameBroker
 from .state_bus import StateBus, state_to_payload
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
+
+MJPEG_BOUNDARY = "sinuca-frame"
+
+
+def mjpeg_generator(
+    broker: FrameBroker,
+    *,
+    max_chunks: int | None = None,
+    wait_timeout: float = 1.0,
+):
+    """Yield raw MJPEG boundary+frame chunks from a :class:`FrameBroker`.
+
+    ``max_chunks`` is a test knob that makes the generator terminate after
+    ``max_chunks`` frames; production callers leave it at ``None`` for an
+    infinite stream. This generator is sync so Starlette runs it in a thread
+    pool, which keeps the event loop free.
+    """
+
+    last_version = -1
+    produced = 0
+    while True:
+        if max_chunks is not None and produced >= max_chunks:
+            return
+        jpeg, version = broker.wait_for_update(last_version, timeout=wait_timeout)
+        last_version = version
+        yield (
+            (
+                f"--{MJPEG_BOUNDARY}\r\n"
+                "Content-Type: image/jpeg\r\n"
+                f"Content-Length: {len(jpeg)}\r\n\r\n"
+            ).encode("ascii")
+            + jpeg
+            + b"\r\n"
+        )
+        produced += 1
 
 
 # --- request bodies ----------------------------------------------------------
@@ -90,11 +126,14 @@ def create_app(
     apply_event: ApplyEventFn,
     *,
     static_dir: Path | None = None,
+    frame_broker: FrameBroker | None = None,
 ) -> FastAPI:
     server = OverlayServer(bus, apply_event)
     app = FastAPI(title="Sinuca Counter Overlay", version="0.1.0")
     app.state.overlay_server = server
     app.state.bus = bus
+    broker = frame_broker if frame_broker is not None else FrameBroker()
+    app.state.frame_broker = broker
 
     static = static_dir or STATIC_DIR
     if static.exists():
@@ -114,12 +153,26 @@ def create_app(
             return JSONResponse({"error": "overlay assets missing"}, status_code=500)
         return FileResponse(path)
 
+    @app.get("/watch")
+    async def watch_page() -> Any:  # noqa: ANN401
+        path = static / "watch.html"
+        if not path.exists():
+            return JSONResponse({"error": "watch assets missing"}, status_code=500)
+        return FileResponse(path)
+
     @app.get("/control")
     async def control_page() -> Any:  # noqa: ANN401
         path = static / "control.html"
         if not path.exists():
             return JSONResponse({"error": "control assets missing"}, status_code=500)
         return FileResponse(path)
+
+    @app.get("/stream.mjpg")
+    async def stream_mjpg(request: Request) -> Any:  # noqa: ANN401
+        return StreamingResponse(
+            mjpeg_generator(broker),
+            media_type=f"multipart/x-mixed-replace; boundary={MJPEG_BOUNDARY}",
+        )
 
     @app.get("/state")
     async def get_state() -> dict[str, Any]:
