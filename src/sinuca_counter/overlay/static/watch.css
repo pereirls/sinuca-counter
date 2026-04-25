@@ -1,0 +1,123 @@
+:root {
+  --fg: #fff;
+  --accent: #ffb547;
+  --bg-panel: rgba(15, 15, 20, 0.72);
+  --bg-panel-border: rgba(255, 181, 71, 0.45);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  color: var(--fg);
+  font-family: "Segoe UI", system-ui, sans-serif;
+  overflow: hidden;
+}
+
+.stage {
+  position: relative;
+  width: 100vw;
+  height: 100vh;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.scoreboard {
+  position: absolute;
+  top: 24px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 32px;
+  padding: 14px 28px;
+  background: var(--bg-panel);
+  border: 2px solid var(--bg-panel-border);
+  border-radius: 14px;
+  font-variant-numeric: tabular-nums;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.7);
+  backdrop-filter: blur(6px);
+}
+
+.player {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 120px;
+}
+
+.player .name {
+  font-size: 1.2rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.player .score {
+  font-size: 3.4rem;
+  font-weight: 700;
+  line-height: 1;
+}
+
+.player.active .name,
+.player.active .score { color: var(--accent); }
+
+.player .turn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: transparent;
+  margin-bottom: 4px;
+  transition: background 0.2s;
+}
+
+.player.active .turn-dot {
+  background: var(--accent);
+  box-shadow: 0 0 10px var(--accent);
+}
+
+.separator {
+  font-size: 2.2rem;
+  font-weight: 300;
+  opacity: 0.5;
+}
+
+.target {
+  position: absolute;
+  top: 120px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  background: var(--bg-panel);
+  border-radius: 999px;
+  font-size: 0.9rem;
+  opacity: 0.85;
+  display: none;
+}
+
+.target.visible { display: block; }
+
+.status {
+  position: absolute;
+  bottom: 16px;
+  right: 20px;
+  font-size: 0.9rem;
+  opacity: 0.8;
+  padding: 4px 10px;
+  background: var(--bg-panel);
+  border-radius: 999px;
+}
+
+.status.warn { color: var(--accent); }
+.status.error { color: #ff6b6b; }

@@ -60,6 +60,11 @@ class ScoreState:
     detection_status: str = "ok"
     rules_name: str = ""
     timeline: tuple[TimelineEntry, ...] = ()
+    # Optional — populated by rules that announce the next expected ball
+    # (e.g. snooker's "red", "colour", or a specific colour during the
+    # finishing phase). Empty string means the current rule set does not
+    # expose a target.
+    target_ball: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -73,6 +78,7 @@ class ScoreState:
             "paused": self.paused,
             "detection_status": self.detection_status,
             "rules_name": self.rules_name,
+            "target_ball": self.target_ball,
             "timeline": [entry.to_dict() for entry in self.timeline],
         }
 

@@ -1,32 +1,31 @@
 # Sinuca Counter
 
-Contador automático de pontos para sinuca brasileira (e, em fases futuras,
-snooker, English pool e transmissões ao vivo). O MVP processa um arquivo de
-vídeo `.mp4`, exibe o placar como overlay (Browser Source no OBS ou janela
-autônoma) e oferece um painel de controle web para o operador.
+Contador automático de pontos para sinuca brasileira e snooker (6 e 15 reds).
+O sistema processa um arquivo de vídeo `.mp4`, exibe o placar como overlay e,
+agora, renderiza o próprio vídeo numa página web com o placar sobreposto, para
+que o operador possa acompanhar tudo na mesma janela.
 
-> Status: **Fase 1a (MVP)** — detecção via OpenCV clássico (HSV +
-> HoughCircles + tracking por proximidade).
+> Status: **Fase 1b** — detecção padrão via YOLO (Ultralytics, classe "sports
+> ball" pré-treinada na COCO). A camada clássica de OpenCV (HSV/HoughCircles)
+> ainda está disponível como fallback (`--detector hsv`) e é usada
+> automaticamente quando o extra `[yolo]` não está instalado.
 
 ## Visão geral
 
 ```
 ┌─────────────────┐     ┌──────────────────┐     ┌──────────────────┐
 │  video_source   │ --> │  vision_pipeline │ --> │   rules_engine   │
-│  (arquivo .mp4) │     │  (detec + track) │     │ (estado partida) │
+│  (arquivo .mp4) │     │  YOLO + tracker  │     │ (estado partida) │
 └─────────────────┘     └──────────────────┘     └─────────┬────────┘
                                                   ScoreState (JSON)
                                                            ▼
                                               ┌────────────────────────┐
                                               │  overlay_server        │
-                                              │  (FastAPI + WebSocket) │
+                                              │  FastAPI + WS + MJPEG  │
                                               └────┬────────┬──────────┘
                                                    ▼        ▼
-                                          Browser Source / Painel /control
+                                       /watch (vídeo+placar)  /control
 ```
-
-Detalhes de design em
-[`docs/sinuca-counter-mvp-design.md`](docs/sinuca-counter-mvp-design.md).
 
 ## Requisitos
 
@@ -37,7 +36,11 @@ Detalhes de design em
 ## Setup
 
 ```bash
+# Sem YOLO (fallback clássico, leve):
 uv sync
+
+# Com YOLO (~200 MB de dependências por causa do torch CPU):
+uv sync --extra yolo
 ```
 
 ## Uso
@@ -51,15 +54,26 @@ uv run sinuca-counter \
     --saque p1
 ```
 
-Na primeira execução, uma janela do OpenCV abre pedindo 4 cliques nos cantos da
-mesa (calibração de homografia). A calibração é salva em
-`<video>.calib.json` e reaproveitada nas próximas execuções.
+Não é necessário clicar nos cantos da mesa — o detector trabalha na resolução
+nativa do frame. A pontuação é calculada por **rack-delta**: o pipeline faz um
+snapshot das bolas antes e depois de cada tacada (via detecção de movimento
+agregado) e qualquer bola que "sumiu" no intervalo é considerada encaçapada.
+Isso torna o sistema imune a oclusões temporárias (taco, braço, jogador).
 
 Em seguida, abra:
 
+- **Vídeo + placar na mesma janela:** <http://127.0.0.1:8088/watch>
 - Overlay para OBS: <http://127.0.0.1:8088/?theme=transparent>
-- Janela autônoma: <http://127.0.0.1:8088/?theme=window>
+- Janela autônoma de placar: <http://127.0.0.1:8088/?theme=window>
 - Painel de controle: <http://127.0.0.1:8088/control>
+
+### Flags principais
+
+- `--rules {brasileira,snooker-6,snooker-15}` — modalidade.
+- `--detector {yolo,hsv}` — backend de detecção. Default: `yolo`.
+- `--yolo-weights` — caminho/nome do modelo YOLO (default: `yolov8n.pt`).
+- `--no-vision` — sobe apenas o servidor de overlay/controle.
+- `--stream-every-n-frames` — reduz FPS do MJPEG para economizar CPU.
 
 ### Painel de controle
 
@@ -69,28 +83,11 @@ Em seguida, abra:
 - Pausar/retomar a aplicação automática de eventos da câmera.
 - Resetar partida (mantém os nomes).
 - Renomear jogadores ao vivo.
-- Corrigir cor do último encaçapamento.
 - Timeline com as últimas ações para contexto do operador.
-
-### Modo overlay-only
-
-Útil para testar a interface sem precisar de vídeo:
-
-```bash
-uv run sinuca-counter --video data/samples/jogo.mp4 --no-vision
-```
-
-### Calibração
-
-- `<video>.calib.json` — matriz de homografia + cantos clicados.
-- `<video>.palette.json` — paleta HSV de referência por cor (opcional; sem ela
-  o sistema usa um perfil padrão).
-- `<video>.replay.jsonl` — log append-only com todos os eventos para debugar
-  regras sem reprocessar vídeo.
 
 ## Modalidades
 
-MVP suporta **sinuca brasileira** (`--rules brasileira`). Pontuação padrão:
+### Sinuca brasileira (`--rules brasileira`)
 
 | Cor | Pontos |
 | --- | ------ |
@@ -105,16 +102,25 @@ MVP suporta **sinuca brasileira** (`--rules brasileira`). Pontuação padrão:
 A flag `--bolao-penalty` ativa a variação em que encaçapar o bolão antes das
 demais cores entrega a pontuação ao adversário.
 
-Snooker e English pool entram na Fase 2 sem mudanças nas demais camadas (basta
-implementar `RuleSet`).
+### Snooker (`--rules snooker-6` / `--rules snooker-15`)
+
+Pontuação clássica: vermelha=1, amarela=2, verde=3, marrom=4, azul=5, rosa=6,
+preta=7. O motor gerencia as duas fases:
+
+- **Fase das vermelhas** — o jogador deve alternar vermelha → colorida →
+  vermelha… As coloridas são "recolocadas" a cada encaçapamento.
+- **Fase final** — quando todas as vermelhas saem da mesa, as coloridas
+  devem ser encaçapadas em ordem crescente de valor (amarela → verde →
+  marrom → azul → rosa → preta) e ficam fora da mesa.
+
+A página `/watch` e os overlays exibem a "próxima bola esperada" quando a
+modalidade é snooker.
 
 ## Roadmap
 
-- **Fase 1b** — substituir `HsvBallDetector` por um `YoloBallDetector` (mesma
-  interface). Os extras `[yolo]` instalam `ultralytics` e `supervision`.
-- **Fase 2** — `WebcamSource`, `ScreenCaptureSource`, `SnookerRules`,
-  `EnglishPoolRules`.
-- **Fase 3** — recalibração automática para vídeos com cortes.
+- **Fase 2** — `WebcamSource`, `ScreenCaptureSource`, fine-tune YOLO com
+  dataset próprio, English pool.
+- **Fase 3** — recalibração automática para vídeos com cortes/zoom.
 - **Fase 4** — `BroadcastOcrPipeline` lendo o placar da emissora.
 
 ## Testes
@@ -123,9 +129,11 @@ implementar `RuleSet`).
 uv run pytest
 ```
 
-A camada do motor de regras é totalmente coberta. Camadas de visão são
-testadas com fixtures sintéticas pequenas; testes de protocol ("ghost tests")
-garantem que consumidores não acoplam em implementações concretas.
+O motor de regras tem cobertura alta (regras brasileira e snooker). A nova
+camada de visão inclui testes unitários para o `ShotPhaseDetector` (state
+machine + diff de snapshots) e para o `FrameBroker` (publicação thread-safe).
+Testes de protocol ("ghost tests") garantem que consumidores não acoplam em
+implementações concretas.
 
 ## Licença
 
