@@ -44,6 +44,8 @@ class ManualAdjustment:
       recent :class:`BallPocketed`).
     * ``"pause"``, ``"resume"`` toggle the paused flag.
     * ``"reset"`` resets scores while keeping player names.
+    * ``"start_match"`` marks the match as started (arms automatic scoring).
+    * ``"stop_match"`` disarms automatic scoring (e.g. pause between frames).
     """
 
     op: Literal[
@@ -55,6 +57,8 @@ class ManualAdjustment:
         "pause",
         "resume",
         "reset",
+        "start_match",
+        "stop_match",
     ]
     t_ms: int = 0
     player: PlayerId | None = None

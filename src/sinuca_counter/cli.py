@@ -30,7 +30,7 @@ from .overlay.server import create_app
 from .overlay.state_bus import StateBus
 from .rules.base import RuleSet
 from .rules.brazilian import BrazilianRules
-from .rules.events import GameEvent
+from .rules.events import GameEvent, ManualAdjustment
 from .rules.snooker import SnookerRules
 from .rules.state import ScoreState
 from .video.file import FileVideoSource
@@ -196,12 +196,27 @@ class VisionWorker:
                 asyncio.run_coroutine_threadsafe(self._bus.publish(state), self._loop)
 
 
-def _apply_event_factory(rules: RuleSet, replay_log: Path | None):
+def _apply_event_factory(
+    rules: RuleSet,
+    replay_log: Path | None,
+    *,
+    shot_phase: ShotPhaseDetector | None = None,
+):
     def apply(event: GameEvent) -> ScoreState:
         if replay_log is not None:
             with open(replay_log, "a", encoding="utf-8") as fh:
                 fh.write(_serialize_event(event) + "\n")
-        return rules.apply(event)
+        state = rules.apply(event)
+        # Keep the vision-side shot detector armed/disarmed in lock-step
+        # with the match_started flag owned by the rules engine. This way
+        # start/stop_match come out of a single place (the control panel
+        # endpoint) and nothing else has to know about wiring.
+        if shot_phase is not None and isinstance(event, ManualAdjustment):
+            if event.op == "start_match":
+                shot_phase.arm(t_ms=event.t_ms)
+            elif event.op in ("stop_match", "reset"):
+                shot_phase.disarm()
+        return state
 
     return apply
 
@@ -266,6 +281,35 @@ def build_parser() -> argparse.ArgumentParser:
         default=2,
         help="publish every Nth processed frame to /stream.mjpg (default: 2)",
     )
+    parser.add_argument(
+        "--speed-threshold",
+        type=float,
+        default=1.5,
+        help="aggregate motion threshold (pixels/frame) to consider the table in motion",
+    )
+    parser.add_argument(
+        "--settle-frames",
+        type=int,
+        default=45,
+        help="frames of stillness required before a shot is finalised (~1.5s at 30fps)",
+    )
+    parser.add_argument(
+        "--min-shot-frames",
+        type=int,
+        default=3,
+        help="minimum frames of motion before a shot is recognised",
+    )
+    parser.add_argument(
+        "--auto-start",
+        action="store_true",
+        help="arm the shot detector immediately (skip waiting for 'Iniciar partida')",
+    )
+    parser.add_argument(
+        "--debug-every-n-frames",
+        type=int,
+        default=30,
+        help=("log motion/state/track counts every N frames at DEBUG level (set to 0 to disable)"),
+    )
     parser.add_argument("--log-level", default="INFO")
     return parser
 
@@ -315,7 +359,45 @@ def main(argv: list[str] | None = None) -> int:
     replay_log: Path | None = None
     if video_path is not None and not args.no_replay_log:
         replay_log = _replay_path(video_path)
-    apply_event = _apply_event_factory(rules, replay_log)
+
+    # Pre-build the vision pieces so the HTTP handlers can drive them via
+    # start_match/stop_match/reset events.
+    tracker: BallTracker | None = None
+    shot_phase: ShotPhaseDetector | None = None
+    pipeline: VisionPipeline | None = None
+    detector: BallDetector | None = None
+    source: FileVideoSource | None = None
+    if not args.no_vision and video_path is not None:
+        source = FileVideoSource(video_path)
+        palette = _load_palette(video_path)
+        classifier = ColorClassifier(palette)
+        detector = _build_detector(args.detector, args.yolo_weights)
+        # Larger occlusion tolerance now that the shot-phase detector is
+        # responsible for deciding what "pocketed" means — we want tracks
+        # to survive through the worst part of the shot.
+        tracker = BallTracker(
+            max_match_distance=45.0,
+            occlusion_tolerance_frames=90,
+        )
+        shot_phase = ShotPhaseDetector(
+            tracker,
+            speed_threshold=args.speed_threshold,
+            settle_frames=args.settle_frames,
+            min_shot_frames=args.min_shot_frames,
+            armed=args.auto_start,
+            debug_every_n_frames=max(0, args.debug_every_n_frames),
+        )
+        if args.auto_start:
+            # Reflect the armed state on the ScoreState so the UI is honest.
+            rules.apply(ManualAdjustment(op="start_match"))
+        pipeline = VisionPipeline(
+            detector=detector,
+            classifier=classifier,
+            tracker=tracker,
+            shot_phase_detector=shot_phase,
+        )
+
+    apply_event = _apply_event_factory(rules, replay_log, shot_phase=shot_phase)
 
     app = create_app(bus, apply_event, frame_broker=frame_broker)
 
@@ -328,25 +410,7 @@ def main(argv: list[str] | None = None) -> int:
         worker_thread: threading.Thread | None = None
         worker: VisionWorker | None = None
 
-        if not args.no_vision and video_path is not None:
-            source = FileVideoSource(video_path)
-            palette = _load_palette(video_path)
-            classifier = ColorClassifier(palette)
-            detector = _build_detector(args.detector, args.yolo_weights)
-            # Larger occlusion tolerance now that the shot-phase detector is
-            # responsible for deciding what "pocketed" means — we want tracks
-            # to survive through the worst part of the shot.
-            tracker = BallTracker(
-                max_match_distance=45.0,
-                occlusion_tolerance_frames=90,
-            )
-            shot_phase = ShotPhaseDetector(tracker)
-            pipeline = VisionPipeline(
-                detector=detector,
-                classifier=classifier,
-                tracker=tracker,
-                shot_phase_detector=shot_phase,
-            )
+        if pipeline is not None and source is not None:
             worker = VisionWorker(
                 source=source,
                 pipeline=pipeline,

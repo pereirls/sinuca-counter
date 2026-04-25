@@ -254,3 +254,12 @@ def test_snooker_implements_ruleset_protocol() -> None:
 
     rules: RuleSet = make_rules(6)
     assert isinstance(rules, RuleSet)
+
+
+def test_snooker_start_match_sets_match_started_flag() -> None:
+    rules = make_rules(reds=6)
+    assert rules.state.match_started is False
+    state = rules.apply(ManualAdjustment(op="start_match"))
+    assert state.match_started is True
+    state = rules.apply(ManualAdjustment(op="stop_match"))
+    assert state.match_started is False

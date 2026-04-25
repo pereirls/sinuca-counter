@@ -121,3 +121,50 @@ html, body {
 
 .status.warn { color: var(--accent); }
 .status.error { color: #ff6b6b; }
+
+.match-controls {
+  position: absolute;
+  bottom: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  gap: 12px;
+  align-items: center;
+  background: var(--bg-panel);
+  padding: 8px 14px;
+  border-radius: 12px;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.match-controls button {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--fg);
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  padding: 8px 16px;
+  border-radius: 8px;
+  font-size: 0.95rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.match-controls button.primary {
+  background: var(--accent);
+  color: #15161d;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+.match-controls button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.match-controls .control-link {
+  color: rgba(255, 255, 255, 0.7);
+  text-decoration: none;
+  font-size: 0.85rem;
+  border-left: 1px solid rgba(255, 255, 255, 0.15);
+  padding-left: 12px;
+}
+
+.match-controls .control-link:hover { color: var(--fg); }

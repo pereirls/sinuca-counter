@@ -22,6 +22,9 @@
     correctBtn: document.getElementById("correct-btn"),
     timeline: document.getElementById("timeline"),
     rules: document.getElementById("rules"),
+    startMatch: document.getElementById("start-match-btn"),
+    stopMatch: document.getElementById("stop-match-btn"),
+    matchBadge: document.getElementById("match-badge"),
   };
 
   async function post(path, body) {
@@ -55,6 +58,16 @@
     });
     if (document.activeElement !== els.renameP1) els.renameP1.value = state.p1_name;
     if (document.activeElement !== els.renameP2) els.renameP2.value = state.p2_name;
+
+    const started = Boolean(state.match_started);
+    if (els.matchBadge) {
+      els.matchBadge.textContent = started
+        ? "partida em andamento — detecção ativa"
+        : "partida não iniciada — aquecimento";
+      els.matchBadge.classList.toggle("live", started);
+    }
+    if (els.startMatch) els.startMatch.disabled = started;
+    if (els.stopMatch) els.stopMatch.disabled = !started;
   }
 
   document.querySelectorAll("button[data-player]").forEach((btn) => {
@@ -85,6 +98,12 @@
   els.correctBtn.addEventListener("click", () => {
     post("/control/correct_last", { color: els.correctColor.value });
   });
+  if (els.startMatch) {
+    els.startMatch.addEventListener("click", () => post("/control/start_match"));
+  }
+  if (els.stopMatch) {
+    els.stopMatch.addEventListener("click", () => post("/control/stop_match"));
+  }
 
   function connect() {
     const ws = new WebSocket(

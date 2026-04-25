@@ -80,17 +80,26 @@ class ShotPhaseDetector:
         settle_frames: int = 45,
         min_shot_frames: int = 3,
         max_pocketed_per_shot: int = 3,
+        armed: bool = False,
+        debug_every_n_frames: int = 0,
     ) -> None:
         self._tracker = tracker
         self._speed_threshold = speed_threshold
         self._settle_frames = settle_frames
         self._min_shot_frames = min_shot_frames
         self._max_pocketed_per_shot = max_pocketed_per_shot
+        # When ``armed`` is False the detector silently observes motion but
+        # never emits events. The operator explicitly arms the detector via
+        # the "Iniciar partida" button in the control panel once warm-up is
+        # over — at that moment we also take a fresh baseline snapshot.
+        self._armed = armed
+        self._debug_every_n_frames = debug_every_n_frames
 
         self._state: str = "IDLE"
         self._pre_shot: _Snapshot | None = None
         self._still_frames = 0
         self._shot_frames = 0
+        self._frame_counter = 0
 
     # -- public API --------------------------------------------------------
 
@@ -98,11 +107,51 @@ class ShotPhaseDetector:
     def state_name(self) -> str:
         return self._state
 
+    @property
+    def armed(self) -> bool:
+        return self._armed
+
+    def arm(self, t_ms: int = 0) -> None:
+        """Arm the detector and take a fresh baseline snapshot.
+
+        Use this when the operator signals that the match has started (e.g.
+        clicking "Iniciar partida" in the control panel). Any state that was
+        accumulated during warm-up is discarded.
+        """
+
+        self._armed = True
+        self._state = "IDLE"
+        self._pre_shot = None
+        self._still_frames = 0
+        self._shot_frames = 0
+        visible = self._tracker.visible_tracks()
+        counts = _count_by_color(visible)
+        log.info(
+            "shot-phase armed at %sms, baseline=%s (%d visible tracks)",
+            t_ms,
+            {c.value: n for c, n in counts.items()},
+            len(visible),
+        )
+
+    def disarm(self) -> None:
+        """Stop emitting events until ``arm()`` is called again."""
+
+        self._armed = False
+        self._state = "IDLE"
+        self._pre_shot = None
+        self._still_frames = 0
+        self._shot_frames = 0
+        log.info("shot-phase disarmed")
+
     def evaluate(self, t_ms: int) -> list[VisionEvent]:
+        self._frame_counter += 1
         visible = self._tracker.visible_tracks()
         agg_speed = sum(t.speed for t in visible)
         moving = agg_speed > self._speed_threshold
+        self._maybe_debug(t_ms, agg_speed, len(visible))
 
+        if not self._armed:
+            return []
         if self._state == "IDLE":
             return self._on_idle(moving, visible, t_ms)
         if self._state == "IN_SHOT":
@@ -110,6 +159,20 @@ class ShotPhaseDetector:
         if self._state == "SETTLING":
             return self._on_settling(moving, t_ms)
         return []
+
+    def _maybe_debug(self, t_ms: int, agg_speed: float, n_visible: int) -> None:
+        if self._debug_every_n_frames <= 0:
+            return
+        if self._frame_counter % self._debug_every_n_frames != 0:
+            return
+        log.debug(
+            "shot-phase t=%dms state=%s armed=%s motion=%.2f tracks=%d",
+            t_ms,
+            self._state,
+            self._armed,
+            agg_speed,
+            n_visible,
+        )
 
     # -- state handlers ----------------------------------------------------
 

@@ -323,6 +323,28 @@ class SnookerRules:
                 rules_name=self._state.rules_name,
                 target_ball=TARGET_RED,
             )
+        if event.op == "start_match":
+            return self._state.with_changes(
+                match_started=True,
+                timeline=self._push_timeline(
+                    TimelineEntry(
+                        t_ms=event.t_ms,
+                        kind="match_start",
+                        description="partida iniciada",
+                    ),
+                ),
+            )
+        if event.op == "stop_match":
+            return self._state.with_changes(
+                match_started=False,
+                timeline=self._push_timeline(
+                    TimelineEntry(
+                        t_ms=event.t_ms,
+                        kind="match_stop",
+                        description="partida pausada",
+                    ),
+                ),
+            )
         log.warning("snooker: unknown manual op %r", event.op)
         return None
 

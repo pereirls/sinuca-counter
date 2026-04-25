@@ -244,6 +244,16 @@ def create_app(
         state = await server.submit(ManualAdjustment(op="reset"))
         return state_to_payload(state)
 
+    @app.post("/control/start_match")
+    async def control_start_match() -> dict[str, Any]:
+        state = await server.submit(ManualAdjustment(op="start_match"))
+        return state_to_payload(state)
+
+    @app.post("/control/stop_match")
+    async def control_stop_match() -> dict[str, Any]:
+        state = await server.submit(ManualAdjustment(op="stop_match"))
+        return state_to_payload(state)
+
     return app
 
 
