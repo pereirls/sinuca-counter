@@ -167,56 +167,67 @@ class VisionWorker:
         self._stop.set()
 
     def run(self) -> None:
-        with self._open_replay_log() as log_handle:
-            frame_idx = 0
-            next_target_wallclock = time.monotonic()
-            while not self._stop.is_set():
-                # Pause loop: while paused we don't read frames, just keep
-                # the playback bus chatty enough that the UI stays responsive
-                # to seek-while-paused (which we apply on resume).
-                if self._playback is not None and self._playback.is_paused():
-                    self._handle_pause_tick()
-                    next_target_wallclock = time.monotonic()
-                    continue
-
-                seek_ms = self._playback.consume_seek() if self._playback else None
-                if seek_ms is not None:
-                    self._source.seek_ms(seek_ms)
-                    if self._shot_phase is not None and self._shot_phase.armed:
-                        # A seek is a discontinuity; don't let stale baseline
-                        # snapshots leak into the new point in time.
-                        self._shot_phase.disarm()
-                        self._publish_state_threadsafe()
-                    next_target_wallclock = time.monotonic()
-
-                item = self._source.read_frame()
-                if item is None:
-                    return  # end of file
-                frame, t_ms = item
-
-                events = self._pipeline.process(frame, t_ms)
-                self._dispatch(events, log_handle)
-                if frame_idx % self._stream_every_n_frames == 0:
-                    self._publish_frame(frame)
-                if self._playback is not None:
-                    self._playback.report_position(t_ms)
-                    if frame_idx % self._publish_position_every_n_frames == 0:
-                        self._publish_playback_threadsafe()
-
-                frame_idx += 1
-
-                # FPS throttle: schedule the next read so wall-clock advances
-                # at the same rate as the video timeline, modulated by speed.
-                if self._frame_interval_s > 0 and self._playback is not None:
-                    speed = max(0.01, self._playback.speed())
-                    next_target_wallclock += self._frame_interval_s / speed
-                    sleep_for = next_target_wallclock - time.monotonic()
-                    if sleep_for > 0:
-                        time.sleep(min(sleep_for, 1.0))
-                    elif sleep_for < -0.5:
-                        # We're more than 0.5s behind real time — just resync
-                        # rather than sprinting through frames trying to catch up.
+        # Wrap everything in try/finally so the underlying VideoCapture is
+        # released on every exit path (stop signal, end-of-file, exception).
+        # The old iterator-based loop got close() for free via
+        # ``FileVideoSource.frames()``'s finally block; the new pull-based
+        # loop does not, so we own the cleanup here.
+        try:
+            with self._open_replay_log() as log_handle:
+                frame_idx = 0
+                next_target_wallclock = time.monotonic()
+                while not self._stop.is_set():
+                    # Pause loop: while paused we don't read frames, just keep
+                    # the playback bus chatty enough that the UI stays responsive
+                    # to seek-while-paused (which we apply on resume).
+                    if self._playback is not None and self._playback.is_paused():
+                        self._handle_pause_tick()
                         next_target_wallclock = time.monotonic()
+                        continue
+
+                    seek_ms = self._playback.consume_seek() if self._playback else None
+                    if seek_ms is not None:
+                        self._source.seek_ms(seek_ms)
+                        if self._shot_phase is not None and self._shot_phase.armed:
+                            # A seek is a discontinuity. Re-arm (instead of
+                            # disarming) so the detector drops its stale
+                            # baseline and counters but stays active at the
+                            # new position — the match as a whole is still
+                            # running from the rules engine's point of view.
+                            self._shot_phase.arm(t_ms=seek_ms)
+                            self._publish_state_threadsafe()
+                        next_target_wallclock = time.monotonic()
+
+                    item = self._source.read_frame()
+                    if item is None:
+                        return  # end of file
+                    frame, t_ms = item
+
+                    events = self._pipeline.process(frame, t_ms)
+                    self._dispatch(events, log_handle)
+                    if frame_idx % self._stream_every_n_frames == 0:
+                        self._publish_frame(frame)
+                    if self._playback is not None:
+                        self._playback.report_position(t_ms)
+                        if frame_idx % self._publish_position_every_n_frames == 0:
+                            self._publish_playback_threadsafe()
+
+                    frame_idx += 1
+
+                    # FPS throttle: schedule the next read so wall-clock advances
+                    # at the same rate as the video timeline, modulated by speed.
+                    if self._frame_interval_s > 0 and self._playback is not None:
+                        speed = max(0.01, self._playback.speed())
+                        next_target_wallclock += self._frame_interval_s / speed
+                        sleep_for = next_target_wallclock - time.monotonic()
+                        if sleep_for > 0:
+                            time.sleep(min(sleep_for, 1.0))
+                        elif sleep_for < -0.5:
+                            # We're more than 0.5s behind real time — just resync
+                            # rather than sprinting through frames trying to catch up.
+                            next_target_wallclock = time.monotonic()
+        finally:
+            self._source.close()
 
     def _handle_pause_tick(self) -> None:
         # Avoid busy-looping while paused.
