@@ -19,6 +19,7 @@ import json
 import logging
 import socket
 import threading
+import time
 from collections.abc import Iterable
 from pathlib import Path
 
@@ -26,6 +27,7 @@ import cv2
 import uvicorn
 
 from .overlay.frame_broker import FrameBroker
+from .overlay.playback import PlaybackBus, PlaybackController
 from .overlay.server import create_app
 from .overlay.state_bus import StateBus
 from .rules.base import RuleSet
@@ -137,6 +139,10 @@ class VisionWorker:
         stream_every_n_frames: int = 1,
         jpeg_quality: int = 75,
         replay_log: Path | None = None,
+        playback: PlaybackController | None = None,
+        playback_bus: PlaybackBus | None = None,
+        shot_phase: ShotPhaseDetector | None = None,
+        publish_position_every_n_frames: int = 5,
     ) -> None:
         self._source = source
         self._pipeline = pipeline
@@ -148,19 +154,84 @@ class VisionWorker:
         self._stream_every_n_frames = max(1, stream_every_n_frames)
         self._jpeg_quality = jpeg_quality
         self._stop = threading.Event()
+        self._playback = playback
+        self._playback_bus = playback_bus
+        self._shot_phase = shot_phase
+        # Frame interval at native speed; 0 means "no FPS info" — we won't
+        # throttle in that case, just let it run as fast as it can.
+        fps = source.fps if source.fps > 0 else 0.0
+        self._frame_interval_s = (1.0 / fps) if fps > 0 else 0.0
+        self._publish_position_every_n_frames = max(1, publish_position_every_n_frames)
 
     def stop(self) -> None:
         self._stop.set()
 
     def run(self) -> None:
         with self._open_replay_log() as log_handle:
-            for frame_idx, (frame, t_ms) in enumerate(self._source.frames()):
-                if self._stop.is_set():
-                    return
+            frame_idx = 0
+            next_target_wallclock = time.monotonic()
+            while not self._stop.is_set():
+                # Pause loop: while paused we don't read frames, just keep
+                # the playback bus chatty enough that the UI stays responsive
+                # to seek-while-paused (which we apply on resume).
+                if self._playback is not None and self._playback.is_paused():
+                    self._handle_pause_tick()
+                    next_target_wallclock = time.monotonic()
+                    continue
+
+                seek_ms = self._playback.consume_seek() if self._playback else None
+                if seek_ms is not None:
+                    self._source.seek_ms(seek_ms)
+                    if self._shot_phase is not None and self._shot_phase.armed:
+                        # A seek is a discontinuity; don't let stale baseline
+                        # snapshots leak into the new point in time.
+                        self._shot_phase.disarm()
+                        self._publish_state_threadsafe()
+                    next_target_wallclock = time.monotonic()
+
+                item = self._source.read_frame()
+                if item is None:
+                    return  # end of file
+                frame, t_ms = item
+
                 events = self._pipeline.process(frame, t_ms)
                 self._dispatch(events, log_handle)
                 if frame_idx % self._stream_every_n_frames == 0:
                     self._publish_frame(frame)
+                if self._playback is not None:
+                    self._playback.report_position(t_ms)
+                    if frame_idx % self._publish_position_every_n_frames == 0:
+                        self._publish_playback_threadsafe()
+
+                frame_idx += 1
+
+                # FPS throttle: schedule the next read so wall-clock advances
+                # at the same rate as the video timeline, modulated by speed.
+                if self._frame_interval_s > 0 and self._playback is not None:
+                    speed = max(0.01, self._playback.speed())
+                    next_target_wallclock += self._frame_interval_s / speed
+                    sleep_for = next_target_wallclock - time.monotonic()
+                    if sleep_for > 0:
+                        time.sleep(min(sleep_for, 1.0))
+                    elif sleep_for < -0.5:
+                        # We're more than 0.5s behind real time — just resync
+                        # rather than sprinting through frames trying to catch up.
+                        next_target_wallclock = time.monotonic()
+
+    def _handle_pause_tick(self) -> None:
+        # Avoid busy-looping while paused.
+        time.sleep(0.05)
+
+    def _publish_playback_threadsafe(self) -> None:
+        if self._playback is None or self._playback_bus is None:
+            return
+        snapshot = self._playback.snapshot()
+        asyncio.run_coroutine_threadsafe(self._playback_bus.publish(snapshot), self._loop)
+
+    def _publish_state_threadsafe(self) -> None:
+        # Re-broadcast current rules state (e.g. after auto-disarm so the UI
+        # picks up match_started=False).
+        asyncio.run_coroutine_threadsafe(self._bus.publish(self._rules.state), self._loop)
 
     def _publish_frame(self, frame) -> None:  # type: ignore[no-untyped-def]
         ok, encoded = cv2.imencode(
@@ -353,6 +424,8 @@ def main(argv: list[str] | None = None) -> int:
 
     rules = _build_rules(args)
     frame_broker = FrameBroker()
+    playback_controller: PlaybackController | None = None
+    playback_bus: PlaybackBus | None = None
 
     video_path: Path | None = Path(args.video).resolve() if args.video else None
     replay_log: Path | None = None
@@ -368,6 +441,11 @@ def main(argv: list[str] | None = None) -> int:
     source: FileVideoSource | None = None
     if not args.no_vision and video_path is not None:
         source = FileVideoSource(video_path)
+        playback_controller = PlaybackController(
+            has_video=True,
+            duration_ms=source.duration_ms,
+        )
+        playback_bus = PlaybackBus(initial=playback_controller.snapshot())
         palette = _load_palette(video_path)
         classifier = ColorClassifier(palette)
         detector = _build_detector(args.detector, args.yolo_weights)
@@ -403,7 +481,13 @@ def main(argv: list[str] | None = None) -> int:
 
     apply_event = _apply_event_factory(rules, replay_log, shot_phase=shot_phase)
 
-    app = create_app(bus, apply_event, frame_broker=frame_broker)
+    app = create_app(
+        bus,
+        apply_event,
+        frame_broker=frame_broker,
+        playback_controller=playback_controller,
+        playback_bus=playback_bus,
+    )
 
     port = _find_free_port(args.host, args.port)
     config = uvicorn.Config(app, host=args.host, port=port, log_level="warning")
@@ -424,6 +508,9 @@ def main(argv: list[str] | None = None) -> int:
                 frame_broker=frame_broker,
                 stream_every_n_frames=max(1, args.stream_every_n_frames),
                 replay_log=replay_log,
+                playback=playback_controller,
+                playback_bus=playback_bus,
+                shot_phase=shot_phase,
             )
             worker_thread = threading.Thread(target=worker.run, name="vision", daemon=True)
             worker_thread.start()

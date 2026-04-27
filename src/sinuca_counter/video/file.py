@@ -43,14 +43,45 @@ class FileVideoSource:
     def fps(self) -> float:
         return float(self._capture.get(cv2.CAP_PROP_FPS) or 0.0)
 
+    @property
+    def duration_ms(self) -> int:
+        """Total video duration in milliseconds, or 0 when unknown."""
+
+        frame_count = self._capture.get(cv2.CAP_PROP_FRAME_COUNT) or 0.0
+        fps = self.fps
+        if frame_count <= 0 or fps <= 0:
+            return 0
+        return int(round(frame_count / fps * 1000.0))
+
+    def position_ms(self) -> int:
+        return int(self._capture.get(cv2.CAP_PROP_POS_MSEC))
+
+    def seek_ms(self, ms: int) -> None:
+        """Seek the underlying ``VideoCapture`` to ``ms`` milliseconds."""
+
+        target = max(0, int(ms))
+        self._capture.set(cv2.CAP_PROP_POS_MSEC, float(target))
+
+    def read_frame(self) -> tuple[np.ndarray, int] | None:
+        """Read one frame; returns ``None`` when the stream is exhausted.
+
+        This is the pull-based companion to :meth:`frames` and is what the
+        :class:`VisionWorker` uses when playback control (pause/seek) is
+        active — driving an iterator from the outside is awkward.
+        """
+
+        ok, frame = self._capture.read()
+        if not ok or frame is None:
+            return None
+        return frame, self.position_ms()
+
     def frames(self) -> Iterator[tuple[np.ndarray, int]]:
         try:
             while True:
-                ok, frame = self._capture.read()
-                if not ok or frame is None:
+                item = self.read_frame()
+                if item is None:
                     return
-                t_ms = int(self._capture.get(cv2.CAP_PROP_POS_MSEC))
-                yield frame, t_ms
+                yield item
         finally:
             self.close()
 

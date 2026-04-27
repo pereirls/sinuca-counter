@@ -21,6 +21,7 @@ from sinuca_counter.rules.events import GameEvent, ManualAdjustment, Undo
 from sinuca_counter.rules.state import BallColor, ScoreState
 
 from .frame_broker import FrameBroker
+from .playback import PlaybackBus, PlaybackController
 from .state_bus import StateBus, state_to_payload
 
 STATIC_DIR = Path(__file__).resolve().parent / "static"
@@ -83,6 +84,14 @@ class CorrectLastBody(BaseModel):
     color: str  # value of BallColor
 
 
+class SeekBody(BaseModel):
+    ms: int = Field(..., ge=0)
+
+
+class SpeedBody(BaseModel):
+    rate: float = Field(..., gt=0)
+
+
 # --- async wiring ------------------------------------------------------------
 
 
@@ -127,6 +136,8 @@ def create_app(
     *,
     static_dir: Path | None = None,
     frame_broker: FrameBroker | None = None,
+    playback_controller: PlaybackController | None = None,
+    playback_bus: PlaybackBus | None = None,
 ) -> FastAPI:
     server = OverlayServer(bus, apply_event)
     app = FastAPI(title="Sinuca Counter Overlay", version="0.1.0")
@@ -134,6 +145,8 @@ def create_app(
     app.state.bus = bus
     broker = frame_broker if frame_broker is not None else FrameBroker()
     app.state.frame_broker = broker
+    app.state.playback_controller = playback_controller
+    app.state.playback_bus = playback_bus
 
     static = static_dir or STATIC_DIR
     if static.exists():
@@ -253,6 +266,88 @@ def create_app(
     async def control_stop_match() -> dict[str, Any]:
         state = await server.submit(ManualAdjustment(op="stop_match"))
         return state_to_payload(state)
+
+    # --- playback control ---------------------------------------------------
+
+    def _require_playback() -> PlaybackController:
+        if playback_controller is None:
+            raise HTTPException(
+                status_code=409,
+                detail="playback control unavailable (no video source)",
+            )
+        return playback_controller
+
+    async def _publish_playback_now() -> None:
+        if playback_controller is not None and playback_bus is not None:
+            await playback_bus.publish(playback_controller.snapshot())
+
+    @app.get("/playback")
+    async def get_playback() -> dict[str, Any]:
+        if playback_controller is None:
+            return {
+                "paused": False,
+                "speed": 1.0,
+                "current_time_ms": 0,
+                "duration_ms": 0,
+                "has_video": False,
+            }
+        return playback_controller.snapshot().to_dict()
+
+    @app.post("/control/playback/pause")
+    async def control_playback_pause() -> dict[str, Any]:
+        ctrl = _require_playback()
+        ctrl.set_paused(True)
+        await _publish_playback_now()
+        return ctrl.snapshot().to_dict()
+
+    @app.post("/control/playback/play")
+    async def control_playback_play() -> dict[str, Any]:
+        ctrl = _require_playback()
+        ctrl.set_paused(False)
+        await _publish_playback_now()
+        return ctrl.snapshot().to_dict()
+
+    @app.post("/control/playback/seek")
+    async def control_playback_seek(body: SeekBody) -> dict[str, Any]:
+        ctrl = _require_playback()
+        ctrl.request_seek(body.ms)
+        await _publish_playback_now()
+        return ctrl.snapshot().to_dict()
+
+    @app.post("/control/playback/speed")
+    async def control_playback_speed(body: SpeedBody) -> dict[str, Any]:
+        ctrl = _require_playback()
+        ctrl.set_speed(body.rate)
+        await _publish_playback_now()
+        return ctrl.snapshot().to_dict()
+
+    @app.websocket("/ws/playback")
+    async def ws_playback(socket: WebSocket) -> None:
+        await socket.accept()
+        if playback_bus is None:
+            # Send a single "no video" snapshot and close so the JS client
+            # gets predictable behaviour without having to special-case the
+            # endpoint not being there.
+            await socket.send_json(
+                {
+                    "paused": False,
+                    "speed": 1.0,
+                    "current_time_ms": 0,
+                    "duration_ms": 0,
+                    "has_video": False,
+                }
+            )
+            await socket.close()
+            return
+        async with playback_bus.subscribe() as queue:
+            try:
+                while True:
+                    snapshot = await queue.get()
+                    await socket.send_json(snapshot.to_dict())
+            except WebSocketDisconnect:
+                return
+            except Exception:  # pragma: no cover - defensive
+                return
 
     return app
 

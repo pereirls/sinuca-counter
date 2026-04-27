@@ -30,6 +30,30 @@
           >Abrir painel de controle</a
         >
       </div>
+      <div class="playback-controls" id="playback-controls" hidden>
+        <button id="play-pause-btn" title="Play/Pause (espaço)">⏸</button>
+        <button id="seek-back-btn" title="Voltar 10s">⏪ 10s</button>
+        <button id="seek-fwd-btn" title="Avançar 10s">10s ⏩</button>
+        <input
+          id="seek-bar"
+          class="seek-bar"
+          type="range"
+          min="0"
+          max="0"
+          step="100"
+          value="0"
+          aria-label="seek"
+        />
+        <span id="time-display" class="time-display">0:00 / 0:00</span>
+        <select id="speed-select" class="speed-select" aria-label="speed">
+          <option value="0.25">0.25×</option>
+          <option value="0.5">0.5×</option>
+          <option value="1" selected>1×</option>
+          <option value="1.5">1.5×</option>
+          <option value="2">2×</option>
+          <option value="4">4×</option>
+        </select>
+      </div>
     </div>
     <script src="/static/watch.js"></script>
   </body>
