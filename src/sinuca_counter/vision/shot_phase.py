@@ -31,6 +31,7 @@ post-shot snapshot is taken once motion has stayed below the threshold for
 from __future__ import annotations
 
 import logging
+import threading
 from dataclasses import dataclass
 
 from sinuca_counter.rules.state import BallColor
@@ -100,6 +101,13 @@ class ShotPhaseDetector:
         self._still_frames = 0
         self._shot_frames = 0
         self._frame_counter = 0
+        # ``arm()``/``disarm()`` are invoked from the asyncio event loop
+        # thread (HTTP handler) while ``evaluate()`` runs in the vision
+        # worker thread. Multi-step state transitions in arm/disarm must be
+        # observable atomically by evaluate(), otherwise the worker can
+        # see e.g. ``_armed=True`` while ``_state`` is still mid-rewind from
+        # a previous shot and emit a spurious TurnEnded.
+        self._lock = threading.Lock()
 
     # -- public API --------------------------------------------------------
 
@@ -119,11 +127,12 @@ class ShotPhaseDetector:
         accumulated during warm-up is discarded.
         """
 
-        self._armed = True
-        self._state = "IDLE"
-        self._pre_shot = None
-        self._still_frames = 0
-        self._shot_frames = 0
+        with self._lock:
+            self._armed = True
+            self._state = "IDLE"
+            self._pre_shot = None
+            self._still_frames = 0
+            self._shot_frames = 0
         visible = self._tracker.visible_tracks()
         counts = _count_by_color(visible)
         log.info(
@@ -136,11 +145,12 @@ class ShotPhaseDetector:
     def disarm(self) -> None:
         """Stop emitting events until ``arm()`` is called again."""
 
-        self._armed = False
-        self._state = "IDLE"
-        self._pre_shot = None
-        self._still_frames = 0
-        self._shot_frames = 0
+        with self._lock:
+            self._armed = False
+            self._state = "IDLE"
+            self._pre_shot = None
+            self._still_frames = 0
+            self._shot_frames = 0
         log.info("shot-phase disarmed")
 
     def evaluate(self, t_ms: int) -> list[VisionEvent]:
@@ -150,15 +160,16 @@ class ShotPhaseDetector:
         moving = agg_speed > self._speed_threshold
         self._maybe_debug(t_ms, agg_speed, len(visible))
 
-        if not self._armed:
+        with self._lock:
+            if not self._armed:
+                return []
+            if self._state == "IDLE":
+                return self._on_idle(moving, visible, t_ms)
+            if self._state == "IN_SHOT":
+                return self._on_in_shot(moving)
+            if self._state == "SETTLING":
+                return self._on_settling(moving, t_ms)
             return []
-        if self._state == "IDLE":
-            return self._on_idle(moving, visible, t_ms)
-        if self._state == "IN_SHOT":
-            return self._on_in_shot(moving)
-        if self._state == "SETTLING":
-            return self._on_settling(moving, t_ms)
-        return []
 
     def _maybe_debug(self, t_ms: int, agg_speed: float, n_visible: int) -> None:
         if self._debug_every_n_frames <= 0:

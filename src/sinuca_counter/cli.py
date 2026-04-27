@@ -352,7 +352,6 @@ def main(argv: list[str] | None = None) -> int:
         raise SystemExit("--video is required unless --no-vision is set")
 
     rules = _build_rules(args)
-    bus = StateBus(initial=rules.state)
     frame_broker = FrameBroker()
 
     video_path: Path | None = Path(args.video).resolve() if args.video else None
@@ -396,6 +395,11 @@ def main(argv: list[str] | None = None) -> int:
             tracker=tracker,
             shot_phase_detector=shot_phase,
         )
+
+    # Initialise the bus AFTER any auto-start side effects above, so the
+    # initial state pushed to /state and the first WebSocket frame already
+    # reflects match_started=True when --auto-start is in play.
+    bus = StateBus(initial=rules.state)
 
     apply_event = _apply_event_factory(rules, replay_log, shot_phase=shot_phase)
 
