@@ -161,3 +161,68 @@ def test_start_match_and_stop_match_endpoints() -> None:
     assert state["match_started"] is True
     state = client.post("/control/stop_match").json()
     assert state["match_started"] is False
+
+
+def _make_client_with_playback(duration_ms: int = 12_000):
+    from sinuca_counter.overlay.playback import PlaybackBus, PlaybackController
+
+    rules = BrazilianRules(p1_name="Lucas", p2_name="Ricardo")
+    bus = StateBus(initial=rules.state)
+    ctrl = PlaybackController(has_video=True, duration_ms=duration_ms)
+    pb_bus = PlaybackBus(initial=ctrl.snapshot())
+
+    def apply(event: GameEvent) -> ScoreState:
+        return rules.apply(event)
+
+    app = create_app(
+        bus,
+        apply,
+        playback_controller=ctrl,
+        playback_bus=pb_bus,
+    )
+    return TestClient(app), ctrl, pb_bus
+
+
+def test_playback_endpoint_returns_no_video_when_unavailable() -> None:
+    client, _, _ = _make_client()
+    response = client.get("/playback")
+    assert response.status_code == 200
+    assert response.json()["has_video"] is False
+
+
+def test_playback_pause_play_endpoints_drive_controller() -> None:
+    client, ctrl, _ = _make_client_with_playback()
+    assert client.post("/control/playback/pause").json()["paused"] is True
+    assert ctrl.is_paused() is True
+    assert client.post("/control/playback/play").json()["paused"] is False
+    assert ctrl.is_paused() is False
+
+
+def test_playback_seek_endpoint_records_request() -> None:
+    client, ctrl, _ = _make_client_with_playback(duration_ms=10_000)
+    response = client.post("/control/playback/seek", json={"ms": 4500})
+    assert response.status_code == 200
+    assert response.json()["current_time_ms"] == 4500
+    assert ctrl.consume_seek() == 4500
+
+
+def test_playback_speed_endpoint_clamps_to_safe_range() -> None:
+    client, ctrl, _ = _make_client_with_playback()
+    response = client.post("/control/playback/speed", json={"rate": 999.0})
+    assert response.status_code == 200
+    assert response.json()["speed"] <= 8.0
+    assert ctrl.speed() <= 8.0
+
+
+def test_playback_endpoints_409_when_no_video() -> None:
+    client, _, _ = _make_client()
+    assert client.post("/control/playback/pause").status_code == 409
+    assert client.post("/control/playback/seek", json={"ms": 100}).status_code == 409
+
+
+def test_playback_websocket_pushes_initial_snapshot() -> None:
+    client, _, _ = _make_client_with_playback(duration_ms=8000)
+    with client.websocket_connect("/ws/playback") as ws:
+        snap = json.loads(ws.receive_text())
+        assert snap["has_video"] is True
+        assert snap["duration_ms"] == 8000
